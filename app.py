@@ -4,8 +4,7 @@ from fpdf import FPDF
 import tempfile
 import os
 
-
-# Function to calculate the new formula: x / (1 - y * 10^(-(Rx * Ry * n^2)))
+# Функция вычисления промежуточного результата по новым границам
 def calculate_peremnozhator_new(x_val_str, y_val_str, n_val_str):
     try:
         x_val = mp.mpf(x_val_str)
@@ -17,39 +16,50 @@ def calculate_peremnozhator_new(x_val_str, y_val_str, n_val_str):
     if n_val <= 0:
         return None, "Неверный ввод. n должно быть положительным целым числом."
 
-    # Calculate Rx (number of digits in x) and Ry (number of digits in y)
-    # For floating point numbers, we consider digits before and after decimal
+    # Разрядности
     Rx = len(x_val_str.replace('.', '').replace('-', ''))
     Ry = len(y_val_str.replace('.', '').replace('-', ''))
 
     try:
-        # Calculate the exponent part: -(Rx * Ry * n^2)
+        # Вычисляем степень и устанавливаем точность
         power = -(mp.mpf(Rx) * mp.mpf(Ry) * (mp.mpf(n_val) ** 2))
-
-        # Determine required precision. This is a heuristic.
-        # A more robust precision calculation might be needed for extreme values.
-        required_precision = int(abs(power) * mp.log10(10)) + 50  # Base 10 log of 10 is 1
+        required_precision = int(abs(power) * mp.log10(10)) + 1000
         if required_precision < 100:
             required_precision = 100
         mp.dps = required_precision
 
+        # Основное вычисление
         denominator = (mp.mpf(1) - y_val * mp.power(10, power))
         if denominator == 0:
             return None, "Ошибка: Деление на ноль. Измените входные значения."
 
         calculation = x_val / denominator
+        full_str = mp.nstr(calculation, n=mp.dps)
 
-        result_string = mp.nstr(calculation, n=required_precision)
+        # Выделяем дробную часть
+        if '.' in full_str:
+            _, dec_part = full_str.split('.')
+        else:
+            dec_part = ''
 
-        digit_count = len(result_string.replace(".", "").replace("-", ""))
+        # Границы
+        interval = Rx * Ry * (n_val ** 2)
+        upper = interval * n_val
+        lower = upper - interval
 
-        return result_string, digit_count, Rx, Ry
+        # Дополняем нулями при необходимости
+        if len(dec_part) < upper:
+            dec_part = dec_part.ljust(upper, '0')
+
+        # Берем цифры с (lower+1)-й по upper-ю после точки
+        intermediate = dec_part[lower:upper]
+        return intermediate, Rx, Ry
+
     except Exception as e:
-        return None, f"Ошибка вычисления: {str(e)}", None, None
+        return None, f"Ошибка вычисления: {str(e)}"
 
-
-# Function to export result to PDF
-def export_to_pdf_new(x, y, n, Rx, Ry, result_string, digit_count):
+# Функция экспорта в PDF с промежуточным результатом
+def export_to_pdf_new(x, y, n, Rx, Ry, intermediate):
     pdf = FPDF()
     pdf.add_page()
     try:
@@ -57,22 +67,20 @@ def export_to_pdf_new(x, y, n, Rx, Ry, result_string, digit_count):
         pdf.set_font("DejaVu", "", 12)
     except RuntimeError:
         st.warning(
-            "Font \'DejaVuSans.ttf\' not found. Please ensure it\'s in the same directory as the script for proper PDF generation.")
+            "Font 'DejaVuSans.ttf' not found. Please ensure it's in the same directory as the script for proper PDF generation.")
         pdf.set_font("Arial", "", 12)
 
     formula = f"{x} / (1 - {y} * 10^(-({Rx} * {Ry} * {n}^2)))"
     pdf.text(10, 10, "Формула: " + formula)
     pdf.text(10, 20, f"Rx (разрядность x): {Rx}")
     pdf.text(10, 30, f"Ry (разрядность y): {Ry}")
-    pdf.text(10, 40, f"Результат содержит {digit_count} знаков")
-    pdf.text(10, 50, f"Ответ: {result_string}")
+    pdf.text(10, 40, f"Промежуточный результат: {intermediate}")
 
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(temp_file.name)
     return temp_file.name
 
-
-# Streamlit Interface
+# Интерфейс Streamlit
 st.title("Перемножатор Калькулятор")
 
 x_input = st.text_input("Первое число (x)", "25")
@@ -80,15 +88,15 @@ y_input = st.text_input("Второе число (y)", "32")
 n_input = st.text_input("Количество умножений (n)", "1")
 
 if st.button("Вычислить"):
-    result, digit_count_or_error, Rx_val, Ry_val = calculate_peremnozhator_new(x_input, y_input, n_input)
-    if result:
-        st.success(f"Результат содержит {digit_count_or_error} знаков")
-        st.text(f"Ответ: {result}")
+    result = calculate_peremnozhator_new(x_input, y_input, n_input)
+    intermediate, *rest = result
+    if intermediate:
+        Rx_val, Ry_val = rest
         st.text(f"Rx (разрядность x): {Rx_val}")
         st.text(f"Ry (разрядность y): {Ry_val}")
+        st.text(f"Результат: {intermediate}")
 
-        pdf_path = export_to_pdf_new(x_input, y_input, n_input, Rx_val, Ry_val, result, digit_count_or_error)
-
+        pdf_path = export_to_pdf_new(x_input, y_input, n_input, Rx_val, Ry_val, intermediate)
         with open(pdf_path, "rb") as pdf_file:
             st.download_button(
                 label="Скачать PDF",
@@ -98,6 +106,5 @@ if st.button("Вычислить"):
             )
         os.unlink(pdf_path)
     else:
-        st.error(digit_count_or_error)
-
-
+        error_msg = rest[0] if rest else 'Неизвестная ошибка'
+        st.error(error_msg)
